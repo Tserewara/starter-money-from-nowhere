@@ -119,7 +119,20 @@ def metrics():
     with log_lock:
         waits = sorted([event["lock_wait_ms"] for event in request_log if event["event"] == "wallet_lock"])
     p99 = waits[min(len(waits) - 1, int(len(waits) * 0.99))] if waits else 0
-    return {"negative_balances": negative, "purchase_count": purchases, "lock_wait_p99_ms": p99, "psp_latency_ms": psp_state["latency_ms"]}
+    return {"negative_balances": negative, "purchase_count": purchases, "lock_wait_p99_ms": p99, "psp_latency_ms": current_psp_latency()}
+
+
+def current_psp_latency():
+    """The PSP's configured latency, read from the PSP service itself.
+
+    The API process holds its own copy of `psp_state`, which `make psp-slow`
+    never touches; asking the PSP is what makes this number true.
+    """
+    try:
+        with urllib.request.urlopen(PSP_URL + "/_control", timeout=2) as response:
+            return json.loads(response.read())["latency_ms"]
+    except (OSError, ValueError, KeyError):
+        return None
 
 
 @api_app.post("/_reset")
@@ -150,6 +163,12 @@ def psp_control(payload: dict):
         if "fail" in payload:
             psp_state["fail"] = bool(payload["fail"])
     return psp_state
+
+
+@psp_app.get("/_control")
+def psp_state_read():
+    with psp_lock:
+        return dict(psp_state)
 
 
 @psp_app.post("/charge")
